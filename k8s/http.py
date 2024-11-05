@@ -3,9 +3,11 @@ import os
 import json
 import ssl
 import urllib.request
+from k8s.result import Output
+import urllib.parse
 
 
-def build_url(host, port, resource, is_core=True, namespace=None):
+def build_url(host, port, resource, is_core=True, namespace=None, labelSelector=None):
     """Kubernetes URL builder
 
     :param host: Kubernetes host
@@ -16,8 +18,12 @@ def build_url(host, port, resource, is_core=True, namespace=None):
     """
 
     path_base = "api/v1" if is_core else "apis/apps/v1"
-    path_parts = ["namespaces", namespace, resource] if namespace else (resource, )
+    path_parts = ["namespaces", namespace, resource] if namespace else (resource,)
     path_full = re.sub(r"/+", "/", os.path.join(path_base, *path_parts).rstrip("/"))
+
+    if labelSelector:
+        labelSelector = "?labelSelector=" + urllib.parse.quote_plus(labelSelector)
+        path_full += labelSelector
 
     return "https://{0}:{1}/{2}".format(host, port, path_full)
 
@@ -60,3 +66,24 @@ def request(*args, insecure=False, **kwargs):
 
     resp = urllib.request.urlopen(req, **urlopen_opts)
     return json.loads(resp.read().decode("utf-8")).get("items"), resp.getcode()
+
+
+def make_requests(urls, parsed, health_check):
+    response = []
+    output = ""
+    for url in urls:
+        response_single, status = request(
+            url, token=parsed.token, insecure=parsed.insecure
+        )
+        response.extend(response_single)
+    output = health_check(response, parsed.expressions).output
+    if not isinstance(output, Output):
+        raise TypeError("Unknown health check format")
+    return output
+
+
+def handle_http_error(e):
+    try:
+        return json.loads(e.read().decode("utf8")).get("message")
+    except json.JSONDecodeError:
+        return e.reason
